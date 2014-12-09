@@ -17,6 +17,7 @@
 #ifndef MTDUTILS_H_
 #define MTDUTILS_H_
 
+#include <stdint.h>
 #include <sys/types.h>  // for size_t, etc.
 
 #ifdef __cplusplus
@@ -38,7 +39,15 @@ int mtd_mount_partition(const MtdPartition *partition, const char *mount_point,
 /* get the partition and the minimum erase/write block size.  NULL is ok.
  */
 int mtd_partition_info(const MtdPartition *partition,
-        size_t *total_size, size_t *erase_size, size_t *write_size);
+                       uint64_t *total_size,
+                       uint32_t *erase_size,
+                       uint32_t *write_size);
+/* retrieve information about an MTD dev node, e.g. node_name /dev/mtd12
+ */
+int mtd_node_info(const char *dev_node_name,
+                  uint64_t *total_size,
+                  uint32_t *erase_size,
+                  uint32_t *write_size);
 
 /* read or write raw data from a partition, starting at the beginning.
  * skips bad blocks as best we can.

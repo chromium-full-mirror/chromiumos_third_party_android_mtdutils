@@ -14,12 +14,14 @@
  * limitations under the License.
  */
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <sys/mount.h>  // for _IOW, _IOR, mount()
 #include <sys/stat.h>
 #include <mtd/mtd-user.h>
@@ -234,24 +236,92 @@ printf("Fixing execute permissions for %s\n", mount_point);
     return rv;
 }
 
+/* read a 64-bit numerical value from sysfs.
+ * node_name is similar to "mtd0"
+ * prop is similar to "erasesize", "writesize", "size"
+ * return -1 on error, and 0 on success
+ */
+static int read_size_64(const char *node_name,
+                        const char *prop,
+                        uint64_t *size) {
+    char *file_name;
+    if (asprintf(&file_name, "/sys/class/mtd/%s/%s", node_name, prop) < 0) {
+        return -1;
+    }
+
+    FILE *fp = fopen(file_name, "re");
+    free(file_name);
+    if (!fp) {
+        return -1;
+    }
+
+    int ret = -1;
+    uint64_t n;
+    if (fscanf(fp, "%" PRIu64, &n) == 1) {
+      *size = n;
+      ret = 0;
+    }
+
+    fclose(fp);
+    return ret;
+}
+
+static int read_size_32(const char *node_name,
+                        const char *prop,
+                        uint32_t *size) {
+    uint64_t s;
+    int r = read_size_64(node_name, prop, &s);
+    if (r == 0) {
+        *size = s;
+    }
+    return r;
+}
+
+static int read_size(const char *node_name, uint64_t *size) {
+    return read_size_64(node_name, "size", size);
+}
+
+static int read_erasesize(const char *node_name, uint32_t *erase_size) {
+    return read_size_32(node_name, "erasesize", erase_size);
+}
+
+static int read_writesize(const char *node_name, uint32_t *write_size) {
+    return read_size_32(node_name, "writesize", write_size);
+}
+
+int mtd_node_info(const char *dev_node_name,
+                  uint64_t *total_size,
+                  uint32_t *erase_size,
+                  uint32_t *write_size) {
+    char *node_name = strrchr(dev_node_name, '/');
+    if (node_name == NULL) {
+        return -1;
+    }
+
+    node_name++;
+
+    int r = 0;
+    if (total_size != NULL) {
+        r |= read_size(node_name, total_size);
+    }
+    if (erase_size != NULL) {
+        r |= read_erasesize(node_name, erase_size);
+    }
+    if (write_size != NULL) {
+        r |= read_writesize(node_name, write_size);
+    }
+    return r;
+}
+
 int
 mtd_partition_info(const MtdPartition *partition,
-        size_t *total_size, size_t *erase_size, size_t *write_size)
+                   uint64_t *total_size,
+                   uint32_t *erase_size,
+                   uint32_t *write_size)
 {
     char mtddevname[32];
     sprintf(mtddevname, "/dev/mtd/mtd%d", partition->device_index);
-    int fd = open(mtddevname, O_RDONLY);
-    if (fd < 0) return -1;
-
-    struct mtd_info_user mtd_info;
-    int ret = ioctl(fd, MEMGETINFO, &mtd_info);
-    close(fd);
-    if (ret < 0) return -1;
-
-    if (total_size != NULL) *total_size = mtd_info.size;
-    if (erase_size != NULL) *erase_size = mtd_info.erasesize;
-    if (write_size != NULL) *write_size = mtd_info.writesize;
-    return 0;
+    return mtd_node_info(mtddevname, total_size, erase_size, write_size);
 }
 
 MtdReadContext *mtd_read_partition(const MtdPartition *partition)
