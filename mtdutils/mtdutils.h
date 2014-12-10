@@ -55,7 +55,10 @@ int mtd_node_info(const char *dev_node_name,
 typedef struct MtdReadContext MtdReadContext;
 typedef struct MtdWriteContext MtdWriteContext;
 
+/* read_partition opens the device node, and owns the file descriptor. */
 MtdReadContext *mtd_read_partition(const MtdPartition *);
+/* read_descriptor uses the provided file descriptor. */
+MtdReadContext *mtd_read_descriptor(int fd, const char *dev_node_name);
 ssize_t mtd_read_data(MtdReadContext *, char *data, size_t data_len);
 void mtd_read_close(MtdReadContext *);
 /* NOTICE: Only use with reads of multiple erase blocks please. */

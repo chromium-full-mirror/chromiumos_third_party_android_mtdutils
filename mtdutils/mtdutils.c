@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#define _GNU_SOURCE
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,10 +38,13 @@ struct MtdPartition {
 };
 
 struct MtdReadContext {
-    const MtdPartition *partition;
+    uint64_t size;
+    uint32_t erase_size;
     char *buffer;
     size_t consumed;
     int fd;
+    /* true if |fd| was opened by read_partition, and should be closed. */
+    bool owned_fd;
 };
 
 struct MtdWriteContext {
@@ -324,28 +327,41 @@ mtd_partition_info(const MtdPartition *partition,
     return mtd_node_info(mtddevname, total_size, erase_size, write_size);
 }
 
-MtdReadContext *mtd_read_partition(const MtdPartition *partition)
+MtdReadContext *mtd_read_descriptor(int fd, const char *dev_node_name)
 {
     MtdReadContext *ctx = (MtdReadContext*) malloc(sizeof(MtdReadContext));
     if (ctx == NULL) return NULL;
 
-    ctx->buffer = malloc(partition->erase_size);
+    if (mtd_node_info(dev_node_name, &ctx->size, &ctx->erase_size, NULL) != 0) {
+        free(ctx);
+        return NULL;
+    }
+
+    ctx->buffer = malloc(ctx->erase_size);
     if (ctx->buffer == NULL) {
         free(ctx);
         return NULL;
     }
 
+    ctx->fd = fd;
+    ctx->owned_fd = false;
+    ctx->consumed = ctx->erase_size;
+    return ctx;
+}
+
+MtdReadContext *mtd_read_partition(const MtdPartition *partition)
+{
     char mtddevname[32];
     sprintf(mtddevname, "/dev/mtd/mtd%d", partition->device_index);
-    ctx->fd = open(mtddevname, O_RDONLY);
-    if (ctx->fd < 0) {
-        free(ctx->buffer);
-        free(ctx);
+    int fd = open(mtddevname, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
         return NULL;
     }
 
-    ctx->partition = partition;
-    ctx->consumed = partition->erase_size;
+    MtdReadContext *ctx = mtd_read_descriptor(fd, mtddevname);
+    if (ctx) {
+        ctx->owned_fd = true;
+    }
     return ctx;
 }
 
@@ -355,9 +371,10 @@ off64_t mtd_read_skip_to(const MtdReadContext* ctx, off64_t offset) {
     return lseek64(ctx->fd, offset, SEEK_SET);
 }
 
-static int read_block(const MtdPartition *partition, int fd, char *data)
+static int read_block(const MtdReadContext *ctx, char *data)
 {
     struct mtd_ecc_stats before, after;
+    int fd = ctx->fd;
     if (ioctl(fd, ECCGETSTATS, &before)) {
         printf("mtd: ECCGETSTATS error (%s)\n", strerror(errno));
         return -1;
@@ -365,10 +382,10 @@ static int read_block(const MtdPartition *partition, int fd, char *data)
 
     loff_t pos = lseek64(fd, 0, SEEK_CUR);
 
-    ssize_t size = partition->erase_size;
+    ssize_t size = ctx->erase_size;
     int mgbb;
 
-    while (pos + size <= (int) partition->size) {
+    while (pos + size <= ctx->size) {
         if (lseek64(fd, pos, SEEK_SET) != pos || read(fd, data, size) != size) {
             printf("mtd: read error at 0x%08llx (%s)\n",
                     pos, strerror(errno));
@@ -389,7 +406,7 @@ static int read_block(const MtdPartition *partition, int fd, char *data)
             return 0;  // Success!
         }
 
-        pos += partition->erase_size;
+        pos += ctx->erase_size;
     }
 
     errno = ENOSPC;
@@ -400,8 +417,8 @@ ssize_t mtd_read_data(MtdReadContext *ctx, char *data, size_t len)
 {
     size_t read = 0;
     while (read < len) {
-        if (ctx->consumed < ctx->partition->erase_size) {
-            size_t avail = ctx->partition->erase_size - ctx->consumed;
+        if (ctx->consumed < ctx->erase_size) {
+            size_t avail = ctx->erase_size - ctx->consumed;
             size_t copy = len - read < avail ? len - read : avail;
             memcpy(data + read, ctx->buffer + ctx->consumed, copy);
             ctx->consumed += copy;
@@ -409,10 +426,10 @@ ssize_t mtd_read_data(MtdReadContext *ctx, char *data, size_t len)
         }
 
         // Read complete blocks directly into the user's buffer
-        while (ctx->consumed == ctx->partition->erase_size &&
-               len - read >= ctx->partition->erase_size) {
-            if (read_block(ctx->partition, ctx->fd, data + read)) return -1;
-            read += ctx->partition->erase_size;
+        while (ctx->consumed == ctx->erase_size &&
+               len - read >= ctx->erase_size) {
+            if (read_block(ctx, data + read)) return -1;
+            read += ctx->erase_size;
         }
 
         if (read >= len) {
@@ -420,8 +437,8 @@ ssize_t mtd_read_data(MtdReadContext *ctx, char *data, size_t len)
         }
 
         // Read the next block into the buffer
-        if (ctx->consumed == ctx->partition->erase_size && read < len) {
-            if (read_block(ctx->partition, ctx->fd, ctx->buffer)) return -1;
+        if (ctx->consumed == ctx->erase_size && read < len) {
+            if (read_block(ctx, ctx->buffer)) return -1;
             ctx->consumed = 0;
         }
     }
@@ -431,7 +448,9 @@ ssize_t mtd_read_data(MtdReadContext *ctx, char *data, size_t len)
 
 void mtd_read_close(MtdReadContext *ctx)
 {
-    close(ctx->fd);
+    if (ctx->owned_fd) {
+        close(ctx->fd);
+    }
     free(ctx->buffer);
     free(ctx);
 }
