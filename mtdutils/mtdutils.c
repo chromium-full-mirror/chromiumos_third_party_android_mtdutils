@@ -351,8 +351,8 @@ MtdReadContext *mtd_read_partition(const MtdPartition *partition)
 
 // Seeks to a location in the partition.  Don't mix with reads of
 // anything other than whole blocks; unpredictable things will result.
-void mtd_read_skip_to(const MtdReadContext* ctx, size_t offset) {
-    lseek64(ctx->fd, offset, SEEK_SET);
+off64_t mtd_read_skip_to(const MtdReadContext* ctx, off64_t offset) {
+    return lseek64(ctx->fd, offset, SEEK_SET);
 }
 
 static int read_block(const MtdPartition *partition, int fd, char *data)
