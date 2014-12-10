@@ -64,7 +64,10 @@ void mtd_read_close(MtdReadContext *);
 /* NOTICE: Only use with reads of multiple erase blocks please. */
 off64_t mtd_read_skip_to(const MtdReadContext *, off64_t offset);
 
+/* write_partition opens the device node, and owns the file descriptor. */
 MtdWriteContext *mtd_write_partition(const MtdPartition *);
+/* write_descriptor uses the provided file descriptor. */
+MtdWriteContext *mtd_write_descriptor(int fd, const char *dev_node_name);
 ssize_t mtd_write_data(MtdWriteContext *, const char *data, size_t data_len);
 off_t mtd_erase_blocks(MtdWriteContext *, int blocks);  /* 0 ok, -1 for all */
 off_t mtd_find_write_start(MtdWriteContext *ctx, off_t pos);
